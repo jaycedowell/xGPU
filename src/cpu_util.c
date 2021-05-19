@@ -126,6 +126,33 @@ void xgpuReorderMatrix(Complex *matrix) {
   memcpy(matrix, tmp, matLength*sizeof(Complex));
 
   free(tmp);
+#elif MATRIX_ORDER == TRIANGULAR_ORDER
+  // reorder the matrix from TRIANGULAR_ORDER to upper triangular
+  
+  int f, i, j, pol1, pol2;
+  size_t matLength = NFREQUENCY * ((NSTATION+1)*(NSTATION/2)*NPOL*NPOL) * (NPULSAR + 1);
+  Complex *tmp = malloc(matLength * sizeof(Complex));
+
+  for(f=0; f<NFREQUENCY; f++){
+    for(i=0; i<NSTATION; i++){
+      for (j=0; j<=i; j++) {
+	       int k = f*(NSTATION+1)*(NSTATION/2) + i*(i+1)/2 + j;
+         int ku = f*(NSTATION+1)*(NSTATION/2) + j*(2*(NSTATION-1)+1-j)/2 + i;
+         for (pol1=0; pol1<NPOL; pol1++) {
+	          for (pol2=0; pol2<NPOL; pol2++) {
+	             size_t index = (k*NPOL+pol1)*NPOL+pol2;
+               size_t indexu = (ku*NPOL+pol2)*NPOL+pol1;
+               tmp[indexu].real =  matrix[index].real;
+               tmp[indexu].imag = -matrix[index].imag;
+            }
+        }
+      }
+    }
+  }
+  
+  memcpy(matrix, tmp, matLength*sizeof(Complex));
+
+  free(tmp);
 #endif
 
   return;
