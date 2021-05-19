@@ -44,7 +44,7 @@ BFstatus BXgpuInit(bxgpu plan,
                    int   nstand,
                    int   npol,
                    int   dev);
-BFstatus BXgpuReset(bxgpu plan);
+BFstatus BXgpuResetState(bxgpu plan);
 BFstatus BXgpuExecute(bxgpu          plan,
                       BFarray const* in,
                       BFarray*       out,

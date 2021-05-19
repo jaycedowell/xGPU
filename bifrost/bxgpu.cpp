@@ -138,7 +138,7 @@ public:
         }
         return status;
     }
-    BFstatus reset() {
+    BFstatus reset_state() {
         BF_ASSERT(_ready, BF_STATUS_INVALID_STATE); 
         
         int xgpu_status;
@@ -190,10 +190,9 @@ BFstatus BXgpuInit(bxgpu plan,
     return plan->init(ntime, nchan, nstand, npol, dev);
 }
 
-BFstatus BXgpuReset(bxgpu plan) {
+BFstatus BXgpuResetState(bxgpu plan) {
     BF_ASSERT(plan, BF_STATUS_INVALID_POINTER);
-    BF_ASSERT(plan, BF_STATUS_INVALID_POINTER);
-    return plan->reset();
+    return plan->reset_state();
 }
 
 BFstatus BXgpuExecute(bxgpu          plan,
