@@ -139,6 +139,20 @@ cross-multiplication on the host and the device and verifies the
 device obtained the correct answer.  The many options regarding number
 of stations, frequency channels etc. are set in the top of this file.
 
+Using the Library with Bifrost:
+
+To wrap xGPU and use it with Bifrost:
+
+  $ cd bifrost
+  $ python ./make_bifrost_plugin.py -b /path/to/bifrost/source bxgpu.cpp
+
+You should then be able to use it in a pipeline as:
+
+  >>> from bxgpu import Bxgpu
+  >>> xg = Bxgpu()
+  >>> gx.init(ntime, nchan, nstation, npol, gpu_device)
+  >>> gx.execute(in_data, out_data, dump)
+
 Benchmarking Performance:
 
 xGPU includes an additional benchmarking utility: CUBE - CUDA
