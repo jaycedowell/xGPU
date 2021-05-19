@@ -127,7 +127,7 @@ PYTHON_WRAPPER_FILE={libname}.py
 all: lib{libname}.so $(PYTHON_BINDINGS_FILE) $(PYTHON_WRAPPER_FILE)
 
 define run_ctypesgen
-	python -c 'from ctypesgen import main as ctypeswrap; ctypeswrap.main()' -l$1 -I. -I{bifrost_include} $^ -o $@
+	{python} -c 'from ctypesgen import main as ctypeswrap; ctypeswrap.main()' -l$1 -I. -I{bifrost_include} $^ -o $@
 	# WAR for 'const char**' being generated as POINTER(POINTER(c_char)) instead of POINTER(c_char_p)
 	sed -i 's/POINTER(c_char)/c_char_p/g' $@
 	# WAR for a buggy WAR in ctypesgen that breaks type checking and auto-byref functionality
@@ -222,7 +222,8 @@ def create_makefile(libname, includes, bifrost_path=None):
                                          bifrost_config=bifrost_config,
                                          bifrost_include=bifrost_include,
                                          bifrost_library=bifrost_library,
-                                         bifrost_script=bifrost_script)
+                                         bifrost_script=bifrost_script,
+                                         python=sys.executable)
     filename = get_makefile_name(libname)
     with open(filename, 'w') as fh:
         fh.write(template)

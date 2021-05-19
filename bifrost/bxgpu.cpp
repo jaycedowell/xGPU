@@ -79,15 +79,19 @@ private:
     int _npol;
     int _dev;
     
-    int _ready = 0;
-    int _is_dp4a = 0;
+    int _ready;
+    int _is_dp4a;
     XGPUContext _context;
     XGPUInfo _info;
+    ComplexInput *_swizzel = NULL;
 public:
-    bxgpu_impl() {}
+    bxgpu_impl() : _ready(0), _is_dp4a(0), _swizzel(NULL) {}
     ~bxgpu_impl() {
         if(_ready) {
-          xgpuFree(&_context);
+            xgpuFree(&_context);
+        }
+        if(_swizzel) {
+            free(_swizzel);
         }
     }
     inline int ntime() const { return _ntime; }
@@ -96,7 +100,7 @@ public:
     inline int npol() const { return _npol; }
     inline int nbaseline() const { return (int) _info.nbaseline; }
     inline BFdtype in_dtype() const { return bf_dtype_from_xgpu(_info.input_type); }
-    inline BFdtype out_dtype() const { return bf_dtype_from_xgpu(_info.compute_type); }
+    inline BFdtype out_dtype() const { return _info.compute_type == XGPU_FLOAT32 ? bf_dtype_from_xgpu(_info.compute_type) : BF_DTYPE_CI32; }
     BFstatus init(int ntime, int nchan, int nstand, int npol, int dev) {
         _ntime = ntime;
         _nchan = nchan;
@@ -117,8 +121,10 @@ public:
         BF_ASSERT(TRIANGULAR_ORDER == _info.matrix_order, BF_STATUS_UNSUPPORTED);
         
         // Check for DP4A
-        _is_dp4a = (_info.compute_type == XGPU_INT32);
-        BF_ASSERT(_is_dp4a == 0, BF_STATUS_UNSUPPORTED);
+        _is_dp4a = (_info.compute_type == XGPU_INT8);
+        if( _is_dp4a ) {
+            _swizzel = (ComplexInput *) malloc(_info.vecLength*sizeof(ComplexInput));
+        }
         
         _context.array_h = NULL;
         _context.array_len = _info.vecLength;
@@ -144,7 +150,12 @@ public:
     BFstatus exec(BFarray const* in, BFarray* out, BFbool dump) {
         BF_ASSERT(_ready, BF_STATUS_INVALID_STATE); 
         
-        _context.array_h = (ComplexInput *) in->data;
+        if( _is_dp4a ) {
+            xgpuSwizzleInput(_swizzel, (ComplexInput *) in->data);
+            _context.array_h = _swizzel;
+        } else {
+            _context.array_h = (ComplexInput *) in->data;
+        }
         xgpuSetHostInputBuffer(&_context);
         _context.matrix_h = (Complex *) out->data;
         xgpuSetHostOutputBuffer(&_context);
