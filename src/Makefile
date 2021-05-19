@@ -28,7 +28,7 @@ RPATH =
 LIBXGPU = libxgpu.dll
 else
 
-NVCCFLAGS = -Xcompiler -D_REENTRANT -Xcompiler -Wall -Xcompiler -Wno-unused-function -ftz=true
+NVCCFLAGS = -Xcompiler -D_REENTRANT -Xcompiler -Wall -Xcompiler -Wno-unused-function -ftz=true -DMATRIX_ORDER_TRIANGULAR
 
 ifneq ($(strip $(OSTYPE)),osx)
 NVCCFLAGS += -Xcompiler -fopenmp
