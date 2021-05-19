@@ -260,8 +260,6 @@ void xgpuCheckResult(Complex *gpu, Complex *cpu, int verbose, ComplexInput *arra
 
 // reorder the input array - separate real/imag and corner turn in time, depth 4
 void xgpuSwizzleInput(ComplexInput *out, const ComplexInput *in) {
-  printf("Swizzling input\n");
-
   signed char *o = (signed char*)out;
   const signed char *i = (signed char*)in;
   int t, f, s, p, c;
