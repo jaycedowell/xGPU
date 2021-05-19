@@ -32,6 +32,7 @@ from __future__ import print_function
 import os
 import sys
 import glob
+import shutil
 import argparse
 
 from ctypesgen import main as ctypeswrap
@@ -299,6 +300,9 @@ def main(args):
     status = build(makename)
     if not status:
         sys.exit(status)
+        
+    # Part 2(b):  Copy the xGPU library over
+    shutil.copy('../src/libxgpu.so', 'libxgpu.so')
         
     # Part 3:  Clean up
     os.unlink(makename)
