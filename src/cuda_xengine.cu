@@ -39,6 +39,7 @@ typedef struct XGPUInternalContextStruct {
   cudaStream_t streams[2];
   cudaEvent_t copyCompletion[2];
   cudaEvent_t kernelCompletion[2];
+  unsigned char own_streams[2] = {0};
 
   // texture channel descriptor
   cudaChannelFormatDesc channelDesc;
@@ -263,7 +264,10 @@ int xgpuInit(XGPUContext *context, int device_flags)
   }
 
   // create the streams
-  for(int i=0; i<2; i++) cudaStreamCreate(&(internal->streams[i]));
+  for(int i=0; i<2; i++) {
+    cudaStreamCreate(&(internal->streams[i]));
+    internal->own_streams[i] = 1;
+  }
   checkCudaError();
 
   // create the events
@@ -331,6 +335,22 @@ int xgpuInit(XGPUContext *context, int device_flags)
 #endif
 #endif 
 
+  return XGPU_OK;
+}
+
+// Set the CUDA stream
+int xgpuSetStream(XGPUContext *context, unsigned long long stream)
+{
+  XGPUInternalContext *internal = (XGPUInternalContext *)context->internal;
+  if(!internal) {
+    return XGPU_NOT_INITIALIZED;
+  }
+  //assign the device
+  cudaSetDevice(internal->device);
+  
+  internal->streams[0] = (cudaStream_t) stream;
+  internal->own_streams[0] = 0;
+  
   return XGPU_OK;
 }
 
@@ -511,7 +531,9 @@ void xgpuFree(XGPUContext *context)
     cudaSetDevice(internal->device);
 
     for(int i=0; i<2; i++) {
-      cudaStreamDestroy(internal->streams[i]);
+      if(internal->own_streams[i] > 0) {
+        cudaStreamDestroy(internal->streams[i]);
+      }
       cudaEventDestroy(internal->copyCompletion[i]);
       cudaEventDestroy(internal->kernelCompletion[i]);
     }

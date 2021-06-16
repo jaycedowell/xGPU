@@ -168,6 +168,9 @@ void xgpuInfo(XGPUInfo *pcxs);
 // function _must_ be called prior to calling xgpuCudaXengine.
 int xgpuInit(XGPUContext *context, int device_flags);
 
+// Set the stream to use with *OnDevice
+int xgpuSetStream(XGPUContext *context, unsigned long long stream);
+
 // Clear the device integration buffer
 //
 // Sets the device integration buffer to all zeros, effectively starting a new
