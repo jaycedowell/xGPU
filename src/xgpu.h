@@ -119,6 +119,7 @@ typedef struct XGPUContextStruct {
 #define XGPU_INSUFFICIENT_TEXTURE_MEMORY (3)
 #define XGPU_NOT_INITIALIZED             (4)
 #define XGPU_HOST_BUFFER_NOT_SET         (5)
+#define XGPU_CONFIGURATON_ERROR          (6)
 
 // Values for xgpuCudaXengine's syncOp parameter
 #define SYNCOP_NONE           0
@@ -217,6 +218,15 @@ void xgpuFree(XGPUContext *context);
 // SYNCOP_SYNC_COMPUTE  - Waits for all computations (and transfers) to
 //                        complete, but does not dump.
 int xgpuCudaXengine(XGPUContext *context, int syncOp);
+
+// Perform correlation.  Like xgpuCudaXengine but assumes that the
+// input and output buffers are already on the GPU.  It also uses
+// only a single stream, internal->streams[0].
+int xgpuCudaXengineOnDevice(XGPUContext *context, int syncOp);
+
+int xgpuSwizzleInputOnDevice(XGPUContext *context, ComplexInput *out, const ComplexInput *in);
+
+int xgpuReorderMatrixonDevice(XGPUContext *context, Complex *matrix);
 
 // Functions in cpu_util.cc
 

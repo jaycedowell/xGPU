@@ -62,6 +62,9 @@ typedef struct XGPUInternalContextStruct {
   // Whether xgpuSetHostOutputBuffer has been called
   bool matrix_h_set;
   bool register_host_matrix;
+  
+  // Temporary device array for matrix reorder
+  Complex * temp_matrix_d;
 } XGPUInternalContext;
 
 #define TILE_HEIGHT 8
@@ -245,6 +248,7 @@ int xgpuInit(XGPUContext *context, int device_flags)
   cudaMalloc((void **) &(internal->array_d[0]), vecLengthPipe*sizeof(ComplexInput));
   cudaMalloc((void **) &(internal->array_d[1]), vecLengthPipe*sizeof(ComplexInput));
   cudaMalloc((void **) &(internal->matrix_d), matLength*sizeof(Complex));
+  cudaMalloc((void **) &(internal->temp_matrix_d), matLength*sizeof(Complex));
   checkCudaError();
   
   //clear out any previous values
@@ -532,6 +536,7 @@ void xgpuFree(XGPUContext *context)
     cudaFree(internal->array_d[1]);
     cudaFree(internal->array_d[0]);
     cudaFree(internal->matrix_d);
+    cudaFreeHost(internal->temp_matrix_d);
 
     free(internal);
     context->internal = NULL;
@@ -673,5 +678,247 @@ int xgpuCudaXengine(XGPUContext *context, int syncOp)
 
   CUBE_ASYNC_END(ENTIRE_PIPELINE);
 
+  return XGPU_OK;
+}
+
+int xgpuCudaXengineOnDevice(XGPUContext *context, int syncOp)
+{
+  XGPUInternalContext *internal = (XGPUInternalContext *)context->internal;
+  if(!internal) {
+    return XGPU_NOT_INITIALIZED;
+  }
+
+  // xgpuSetHostInputBuffer and xgpuSetHostOutputBuffer must have been called
+  if( !internal->array_h_set || !internal->matrix_h_set ) {
+    return XGPU_HOST_BUFFER_NOT_SET;
+  }
+
+  //assign the device
+  cudaSetDevice(internal->device);
+
+  ComplexInput **array_d = internal->array_d;
+  cudaStream_t *streams = internal->streams;
+  cudaEvent_t *copyCompletion = internal->copyCompletion;
+  cudaEvent_t *kernelCompletion = internal->kernelCompletion;
+  cudaChannelFormatDesc channelDesc = internal->channelDesc;
+
+  // set pointers to the real and imaginary components of the device matrix
+#ifndef DP4A
+  float4 *matrix_real_d = (float4 *)(internal->matrix_d);
+  float4 *matrix_imag_d = (float4 *)(internal->matrix_d + compiletime_info.matLength/2);
+#else
+  int4 *matrix_real_d = (int4 *)(internal->matrix_d);
+  int4 *matrix_imag_d = (int4 *)(internal->matrix_d + compiletime_info.matLength/2);
+#endif
+
+  int Nblock = compiletime_info.nstation/min(TILE_HEIGHT,TILE_WIDTH);
+  ComplexInput *array_load;
+  ComplexInput *array_compute; 
+
+  dim3 dimBlock(TILE_WIDTH,TILE_HEIGHT,1);
+  //allocated exactly as many thread blocks as are needed
+  dim3 dimGrid(((Nblock/2+1)*(Nblock/2))/2, compiletime_info.nfrequency);
+
+  CUBE_ASYNC_START(ENTIRE_PIPELINE);
+
+  // Need to fill pipeline before loop
+  long long unsigned int vecLengthPipe = compiletime_info.vecLengthPipe;
+  ComplexInput *array_hp = context->array_h + context->input_offset;
+  // Only start the transfer once the kernel has completed processing input
+  // buffer 0.  This is a no-op unless previous call to xgpuCudaXengine() had
+  // SYNCOP_NONE or SYNCOP_SYNC_TRANSFER.
+  cudaStreamWaitEvent(streams[0], kernelCompletion[0], 0);
+  CUBE_ASYNC_COPY_CALL(array_d[0], array_hp, vecLengthPipe*sizeof(ComplexInput), cudaMemcpyDeviceToDevice, streams[0]);
+  cudaEventRecord(copyCompletion[0], streams[0]); // record the completion of the d2d transfer
+  checkCudaError();
+
+  CUBE_ASYNC_START(PIPELINE_LOOP);
+
+#ifdef POWER_LOOP
+  for (int q=0; ; q++)
+#endif
+  for (int p=1; p<PIPE_LENGTH; p++) {
+    array_compute = array_d[(p+1)%2];
+    array_load = array_d[p%2];
+
+    // Kernel Calculation
+#if TEXTURE_DIM == 2
+#ifndef DP4A
+    cudaBindTexture2D(0, tex2dfloat2, array_compute, channelDesc, NFREQUENCY*NSTATION*NPOL, NTIME_PIPE,
+		      NFREQUENCY*NSTATION*NPOL*sizeof(ComplexInput));
+#else
+    cudaBindTexture2D(0, tex2dchar4, array_compute, channelDesc, NFREQUENCY*NSTATION*NPOL, NTIME_PIPE/4,
+		      NFREQUENCY*NSTATION*NPOL*2*sizeof(char4));
+#endif
+#else
+#ifndef DP4A
+    cudaBindTexture(0, tex1dfloat2, array_compute, channelDesc, NFREQUENCY*NSTATION*NPOL*NTIME_PIPE*sizeof(ComplexInput));
+#else
+    cudaBindTexture(0, tex1dchar4, array_compute, channelDesc, NFREQUENCY*NSTATION*NPOL*(NTIME_PIPE/4)*sizeof(int2));
+#endif
+#endif
+    cudaStreamWaitEvent(streams[0], copyCompletion[(p+1)%2], 0); // only start the kernel once the h2d transfer is complete
+    CUBE_ASYNC_KERNEL_CALL(shared2x2, dimGrid, dimBlock, 0, streams[0], 
+			   matrix_real_d, matrix_imag_d, NSTATION, writeMatrix);
+    cudaEventRecord(kernelCompletion[(p+1)%2], streams[0]); // record the completion of the kernel
+    checkCudaError();
+
+    // Download next chunk of input data
+    cudaStreamWaitEvent(streams[0], kernelCompletion[p%2], 0); // only start the transfer once the kernel has completed
+    CUBE_ASYNC_COPY_CALL(array_load, array_hp+p*vecLengthPipe, vecLengthPipe*sizeof(ComplexInput), cudaMemcpyDeviceToDevice, streams[0]);
+    cudaEventRecord(copyCompletion[p%2], streams[0]); // record the completion of the d2d transfer
+    checkCudaError();
+  }
+
+  CUBE_ASYNC_END(PIPELINE_LOOP);
+
+  array_compute = array_d[(PIPE_LENGTH+1)%2];
+  // Final kernel calculation
+#if TEXTURE_DIM == 2
+#ifndef DP4A
+    cudaBindTexture2D(0, tex2dfloat2, array_compute, channelDesc, NFREQUENCY*NSTATION*NPOL, NTIME_PIPE,
+		      NFREQUENCY*NSTATION*NPOL*sizeof(ComplexInput));
+#else
+    cudaBindTexture2D(0, tex2dchar4, array_compute, channelDesc, NFREQUENCY*NSTATION*NPOL, NTIME_PIPE/4,
+		      NFREQUENCY*NSTATION*NPOL*2*sizeof(char4));
+#endif
+#else
+#ifndef DP4A
+    cudaBindTexture(0, tex1dfloat2, array_compute, channelDesc, NFREQUENCY*NSTATION*NPOL*NTIME_PIPE*sizeof(ComplexInput));
+#else
+    cudaBindTexture(0, tex1dchar4, array_compute, channelDesc, NFREQUENCY*NSTATION*NPOL*(NTIME_PIPE/4)*sizeof(int2));
+#endif
+#endif
+  cudaStreamWaitEvent(streams[0], copyCompletion[(PIPE_LENGTH+1)%2], 0);
+  CUBE_ASYNC_KERNEL_CALL(shared2x2, dimGrid, dimBlock, 0, streams[0], matrix_real_d, matrix_imag_d,
+			 NSTATION, writeMatrix);
+
+  if(syncOp == SYNCOP_DUMP) {
+    checkCudaError();
+    //copy the data back, employing a similar strategy as above
+    CUBE_COPY_CALL(context->matrix_h + context->output_offset, internal->matrix_d, compiletime_info.matLength*sizeof(Complex), cudaMemcpyDeviceToDevice);
+    checkCudaError();
+  } else if(syncOp == SYNCOP_SYNC_COMPUTE) {
+    // Synchronize on the compute stream (i.e. wait for it to complete)
+    cudaStreamSynchronize(streams[0]);
+  } else {
+      // record the completion of the kernel for next call
+      cudaEventRecord(kernelCompletion[(PIPE_LENGTH+1)%2], streams[0]);
+      checkCudaError();
+
+      if(syncOp == SYNCOP_SYNC_TRANSFER) {
+        // Synchronize on the transfer stream (i.e. wait for it to complete)
+        cudaStreamSynchronize(streams[0]);
+      }
+  }
+
+  CUBE_ASYNC_END(ENTIRE_PIPELINE);
+
+  return XGPU_OK;
+}
+
+// Simple kernel for swizzeling on the GPU
+__global__ void swizzel_kernel(ComplexInput *out, const ComplexInput *in)
+{
+  signed char *o = (signed char*)out;
+  const signed char *i = (signed char*)in;
+  int t, f, s, p, c;
+  t = blockIdx.x;
+  f = threadIdx.x;
+  s = threadIdx.y;
+  
+  for (p=0; p<NPOL; p++) {
+	  for (c=0; c<2; c++) {
+	    o[((((t/4*NFREQUENCY+f)*NSTATION+s)*NPOL+p)*2+c)*4+t%4] =
+	      i[( ( (t*NFREQUENCY+f)*NSTATION+s )*NPOL+p )*2 + c];
+	  }
+	}
+}
+
+int xgpuSwizzleInputOnDevice(XGPUContext *context, ComplexInput *out, const ComplexInput *in)
+{
+  XGPUInternalContext *internal = (XGPUInternalContext *)context->internal;
+  if(!internal) {
+    return XGPU_NOT_INITIALIZED;
+  }
+  
+  //assign the device
+  cudaSetDevice(internal->device);
+
+  cudaStream_t *streams = internal->streams;
+  cudaEvent_t *kernelCompletion = internal->kernelCompletion;
+  
+  // Only start the kernel once the previous kernel calls have finished.  This
+  // is a no-op unless previous call to xgpuCudaXengineOnDevice() had SYNCOP_NONE
+  // or SYNCOP_SYNC_TRANSFER.
+  cudaStreamWaitEvent(streams[0], kernelCompletion[0], 0);
+  cudaStreamWaitEvent(streams[0], kernelCompletion[1], 0);
+  
+  dim3 block(NFREQUENCY, NSTATION);
+  dim3 grid(NTIME, 1, 1);
+  
+  CUBE_ASYNC_KERNEL_CALL(swizzel_kernel, grid, block, 0, streams[0], out, in);
+  checkCudaError();
+  
+  cudaEventRecord(kernelCompletion[0], streams[0]);
+  
+  return XGPU_OK;
+}
+
+__global__ void reorder_kernel(Complex *out, const Complex *in)
+{
+  int f, i, j, pol1, pol2;
+  f = threadIdx.x;
+  i = threadIdx.y;
+  
+  for (j=0; j<=i; j++) {
+    int k = f*(NSTATION+1)*(NSTATION/2) + i*(i+1)/2 + j;
+    int ku = f*(NSTATION+1)*(NSTATION/2) + j*(2*(NSTATION-1)+1-j)/2 + i;
+    for (pol1=0; pol1<NPOL; pol1++) {
+      for (pol2=0; pol2<NPOL; pol2++) {
+         size_t index = (k*NPOL+pol1)*NPOL+pol2;
+         size_t indexu = (ku*NPOL+pol2)*NPOL+pol1;
+         out[indexu].real =  in[index].real;
+         out[indexu].imag = -in[index].imag;
+      }
+    }
+  }
+}
+
+int xgpuReorderMatrixOnDevice(XGPUContext *context, Complex *matrix)
+{
+  XGPUInternalContext *internal = (XGPUInternalContext *)context->internal;
+  if(!internal) {
+    return XGPU_NOT_INITIALIZED;
+  }
+  
+  // make sure we have the right kind of matrix
+  if( MATRIX_ORDER != TRIANGULAR_ORDER ) {
+    return XGPU_CONFIGURATON_ERROR;
+  }
+  
+  //assign the device
+  cudaSetDevice(internal->device);
+
+  cudaStream_t *streams = internal->streams;
+  cudaEvent_t *kernelCompletion = internal->kernelCompletion;
+  
+  // Only start the kernel once the previous kernel calls have finished.  This
+  // is a no-op unless previous call to xgpuCudaXengineOnDevice() had SYNCOP_NONE
+  // or SYNCOP_SYNC_TRANSFER.
+  cudaStreamWaitEvent(streams[0], kernelCompletion[0], 0);
+  cudaStreamWaitEvent(streams[0], kernelCompletion[1], 0);
+  
+  dim3 block(NFREQUENCY, NSTATION);
+  dim3 grid(1, 1, 1);
+  
+  CUBE_ASYNC_KERNEL_CALL(reorder_kernel, grid, block, 0, streams[0], internal->temp_matrix_d, matrix);
+  checkCudaError();
+  
+  CUBE_ASYNC_COPY_CALL(matrix, internal->temp_matrix_d, compiletime_info.matLength*sizeof(Complex), cudaMemcpyDeviceToDevice, streams[0]);
+  checkCudaError();
+  
+  cudaEventRecord(kernelCompletion[0], streams[0]);
+  
   return XGPU_OK;
 }
