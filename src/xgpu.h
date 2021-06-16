@@ -229,7 +229,7 @@ int xgpuCudaXengineOnDevice(XGPUContext *context, int syncOp);
 
 int xgpuSwizzleInputOnDevice(XGPUContext *context, ComplexInput *out, const ComplexInput *in);
 
-int xgpuReorderMatrixonDevice(XGPUContext *context, Complex *matrix);
+int xgpuReorderMatrixOnDevice(XGPUContext *context, Complex *matrix);
 
 // Functions in cpu_util.cc
 
