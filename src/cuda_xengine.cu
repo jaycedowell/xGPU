@@ -840,14 +840,16 @@ int xgpuCudaXengineOnDevice(XGPUContext *context, int syncOp)
 }
 
 // Simple kernel for swizzeling on the GPU
-__global__ void swizzel_kernel(ComplexInput *out, const ComplexInput *in)
+CUBE_KERNEL(swizzel_kernel, ComplexInput *out, const ComplexInput *in)
 {
+  CUBE_START;
+  
   signed char *o = (signed char*)out;
   const signed char *i = (signed char*)in;
   int t, f, s, p, c;
   t = blockIdx.x;
-  f = threadIdx.x;
-  s = threadIdx.y;
+  f = blockIdx.y;
+  s = threadIdx.x;
   
   for (p=0; p<NPOL; p++) {
 	  for (c=0; c<2; c++) {
@@ -855,6 +857,8 @@ __global__ void swizzel_kernel(ComplexInput *out, const ComplexInput *in)
 	      i[( ( (t*NFREQUENCY+f)*NSTATION+s )*NPOL+p )*2 + c];
 	  }
 	}
+  
+  CUBE_END;
 }
 
 int xgpuSwizzleInputOnDevice(XGPUContext *context, ComplexInput *out, const ComplexInput *in)
@@ -876,8 +880,8 @@ int xgpuSwizzleInputOnDevice(XGPUContext *context, ComplexInput *out, const Comp
   cudaStreamWaitEvent(streams[0], kernelCompletion[0], 0);
   cudaStreamWaitEvent(streams[0], kernelCompletion[1], 0);
   
-  dim3 block(NFREQUENCY, NSTATION);
-  dim3 grid(NTIME, 1, 1);
+  dim3 block(NSTATION, 1);
+  dim3 grid(NTIME, NFREQUENCY, 1);
   
   CUBE_ASYNC_KERNEL_CALL(swizzel_kernel, grid, block, 0, streams[0], out, in);
   checkCudaError();
@@ -939,7 +943,6 @@ int xgpuReorderMatrixOnDevice(XGPUContext *context, Complex *matrix)
   dim3 grid(NFREQUENCY, 1, 1);
   
   CUBE_ASYNC_KERNEL_CALL(reorder_kernel, grid, block, 0, streams[0], internal->temp_matrix_d, matrix);
-  cudaEventRecord(kernelCompletion[0], streams[0]);
   checkCudaError();
   
   CUBE_ASYNC_COPY_CALL(matrix, internal->temp_matrix_d, compiletime_info.matLength*sizeof(Complex), cudaMemcpyDeviceToDevice, streams[0]);
