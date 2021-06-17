@@ -37,7 +37,9 @@
 
 #include <bifrost/array.h>
 #include <bifrost/common.h>
-#include <utils.hpp>
+#include "utils.hpp"
+#include "cuda.hpp"
+#include "trace.hpp"
 #include <stdlib.h>
 #include <stdio.h>
 #include <iostream>
@@ -45,6 +47,8 @@
 #include "bxgpu.h"
 
 #include "xgpu.h"
+
+thread_local cudaStream_t g_cuda_stream = cudaStreamPerThread;
 
 //
 // Convert from a XGPU data type to a Bifrost data type
