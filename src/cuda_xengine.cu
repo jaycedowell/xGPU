@@ -887,11 +887,13 @@ int xgpuSwizzleInputOnDevice(XGPUContext *context, ComplexInput *out, const Comp
   return XGPU_OK;
 }
 
-__global__ void reorder_kernel(Complex *out, const Complex *in)
+CUBE_KERNEL(reorder_kernel, Complex *out, const Complex *in)
 {
+  CUBE_START;
+
   int f, i, j, pol1, pol2;
-  f = threadIdx.x;
-  i = threadIdx.y;
+  f = blockIdx.x;
+  i = threadIdx.x;
   
   for (j=0; j<=i; j++) {
     int k = f*(NSTATION+1)*(NSTATION/2) + i*(i+1)/2 + j;
@@ -905,6 +907,8 @@ __global__ void reorder_kernel(Complex *out, const Complex *in)
       }
     }
   }
+
+  CUBE_END;
 }
 
 int xgpuReorderMatrixOnDevice(XGPUContext *context, Complex *matrix)
@@ -931,10 +935,11 @@ int xgpuReorderMatrixOnDevice(XGPUContext *context, Complex *matrix)
   cudaStreamWaitEvent(streams[0], kernelCompletion[0], 0);
   cudaStreamWaitEvent(streams[0], kernelCompletion[1], 0);
   
-  dim3 block(NFREQUENCY, NSTATION);
-  dim3 grid(1, 1, 1);
+  dim3 block(NSTATION, 1);
+  dim3 grid(NFREQUENCY, 1, 1);
   
   CUBE_ASYNC_KERNEL_CALL(reorder_kernel, grid, block, 0, streams[0], internal->temp_matrix_d, matrix);
+  cudaEventRecord(kernelCompletion[0], streams[0]);
   checkCudaError();
   
   CUBE_ASYNC_COPY_CALL(matrix, internal->temp_matrix_d, compiletime_info.matLength*sizeof(Complex), cudaMemcpyDeviceToDevice, streams[0]);
