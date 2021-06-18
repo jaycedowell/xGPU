@@ -155,9 +155,8 @@ public:
         BF_ASSERT_EXCEPTION(xgpu_status == XGPU_OK, BF_STATUS_INTERNAL_ERROR);
         
         // Zero out the accumulator
-        this->reset_state();
-        
         _ready = 1;
+        this->reset_state();
     }
     void reset_state() {
         BF_ASSERT_EXCEPTION(_ready, BF_STATUS_INVALID_STATE);
