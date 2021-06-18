@@ -113,7 +113,6 @@ public:
         _nchan = nchan;
         _nstand = nstand;
         _npol = npol;
-        _dev = dev;
         
         int xgpu_status;
         xgpuInfo(&_info);
@@ -161,14 +160,14 @@ public:
         _ready = 1;
     }
     void reset_state() {
-        BF_ASSERT(_ready, BF_STATUS_INVALID_STATE); 
+        BF_ASSERT_EXCEPTION(_ready, BF_STATUS_INVALID_STATE);
         
         int xgpu_status;
         xgpu_status = xgpuClearDeviceIntegrationBuffer(&_context);
         BF_ASSERT_EXCEPTION(xgpu_status == XGPU_OK, BF_STATUS_INTERNAL_ERROR);
     }
     void exec(BFarray const* in, BFarray* out, BFbool dump) {
-        BF_ASSERT(_ready, BF_STATUS_INVALID_STATE); 
+        BF_ASSERT_EXCEPTION(_ready, BF_STATUS_INVALID_STATE);
         
         // Swizzel, if needed, and set the input array
         int xgpu_status;
