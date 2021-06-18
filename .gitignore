@@ -10,3 +10,7 @@ src/libxgpu.so
 src/xgpuinfo
 src/xgpu_version.h
 src/Makefile.local
+bifrost/bxgpu.py
+bifrost/bxgpu_generated.py
+bifrost/libbxgpu.so
+bifrost/libxgpu.so
