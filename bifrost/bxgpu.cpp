@@ -82,7 +82,6 @@ private:
     int _nchan;
     int _nstand;
     int _npol;
-    int _dev;
     
     int _ready;
     int _is_dp4a;
@@ -93,11 +92,12 @@ private:
 public:
     bxgpu_impl() : _ready(0), _is_dp4a(0), _swizzel(NULL), _stream(g_cuda_stream) {}
     ~bxgpu_impl() {
+        cudaDeviceSynchronize();
+        
         if(_ready) {
             xgpuFree(&_context);
         }
         if(_swizzel) {
-            cudaSetDevice(_dev);
             cudaFree(_swizzel);
         }
     }
@@ -108,7 +108,7 @@ public:
     inline int nbaseline() const { return (int) _info.nbaseline; }
     inline BFdtype in_dtype() const { return bf_dtype_from_xgpu(_info.input_type); }
     inline BFdtype out_dtype() const { return _info.compute_type == XGPU_FLOAT32 ? bf_dtype_from_xgpu(_info.compute_type) : BF_DTYPE_CI32; }
-    BFstatus init(int ntime, int nchan, int nstand, int npol, int dev) {
+    void init(int ntime, int nchan, int nstand, int npol) {
         _ntime = ntime;
         _nchan = nchan;
         _nstand = nstand;
@@ -116,72 +116,89 @@ public:
         _dev = dev;
         
         int xgpu_status;
-        BFstatus status;
         xgpuInfo(&_info);
         
-        BF_ASSERT(_ntime == _info.ntime, BF_STATUS_INVALID_SHAPE);
-        BF_ASSERT(_nchan == _info.nfrequency, BF_STATUS_INVALID_SHAPE);
-        BF_ASSERT(_nstand == _info.nstation, BF_STATUS_INVALID_SHAPE);
-        BF_ASSERT(_npol == _info.npol, BF_STATUS_INVALID_SHAPE);
+        // Sanity checks
+        //// Check compatibility with xGPU
+        BF_ASSERT_EXCEPTION(_ntime == _info.ntime, BF_STATUS_INVALID_SHAPE);
+        BF_ASSERT_EXCEPTION(_nchan == _info.nfrequency, BF_STATUS_INVALID_SHAPE);
+        BF_ASSERT_EXCEPTION(_nstand == _info.nstation, BF_STATUS_INVALID_SHAPE);
+        BF_ASSERT_EXCEPTION(_npol == _info.npol, BF_STATUS_INVALID_SHAPE);
         
-        // We only want XGPU if it is in lower triangular
-        BF_ASSERT(TRIANGULAR_ORDER == _info.matrix_order, BF_STATUS_UNSUPPORTED);
+        //// We only want XGPU if it is in lower triangular
+        BF_ASSERT_EXCEPTION(TRIANGULAR_ORDER == _info.matrix_order, BF_STATUS_UNSUPPORTED);
         
         // Check for DP4A
         _is_dp4a = (_info.compute_type == XGPU_INT8);
         
+        // Get the GPU to use
+        int device;
+        BF_CHECK_CUDA_EXCEPTION(cudaGetDevice(&device), BF_STATUS_DEVICE_ERROR);
+        
+        // Initial array/matrix (non-)setup
         _context.array_h = NULL;
         _context.array_len = _info.vecLength;
         _context.matrix_h = NULL;
         _context.matrix_len = _info.matLength;
         
-        xgpu_status = xgpuInit(&_context, _dev | XGPU_DONT_REGISTER);
-        status = bf_status_from_xgpu(xgpu_status);
-        if(_is_dp4a) {
-            cudaSetDevice(_dev);
-            
-            cudaMalloc((void**)&_swizzel, _info.vecLength*sizeof(ComplexInput));
-        }
-        xgpuSetStream(&_context, (unsigned long long) _stream);
+        // Setup xGPU for use
+        xgpu_status = xgpuInit(&_context, device | XGPU_DONT_REGISTER);
+        BF_ASSERT_EXCEPTION(xgpu_status == XGPU_OK, BF_STATUS_INTERNAL_ERROR);
         
-        if( status == BF_STATUS_SUCCESS ) {
-            _ready = 1;
+        // Temporary storage for reordered input data
+        if(_is_dp4a) {
+            cudaMalloc((void**)&_swizzel, _info.vecLength*sizeof(ComplexInput));
+            BF_CHECK_CUDA_EXCEPTION(cudaGetLastError(), BF_STATUS_MEM_ALLOC_FAILED);
         }
-        return status;
+        
+        // Set the stream to use to the object's stream
+        xgpu_status = xgpuSetStream(&_context, (unsigned long long) _stream);
+        BF_ASSERT_EXCEPTION(xgpu_status == XGPU_OK, BF_STATUS_INTERNAL_ERROR);
+        
+        // Zero out the accumulator
+        this->reset_state();
+        
+        _ready = 1;
     }
-    BFstatus reset_state() {
+    void reset_state() {
         BF_ASSERT(_ready, BF_STATUS_INVALID_STATE); 
         
         int xgpu_status;
-        BFstatus status;
         xgpu_status = xgpuClearDeviceIntegrationBuffer(&_context);
-        status = bf_status_from_xgpu(xgpu_status);
-        return status;
+        BF_ASSERT_EXCEPTION(xgpu_status == XGPU_OK, BF_STATUS_INTERNAL_ERROR);
     }
-    BFstatus exec(BFarray const* in, BFarray* out, BFbool dump) {
+    void exec(BFarray const* in, BFarray* out, BFbool dump) {
         BF_ASSERT(_ready, BF_STATUS_INVALID_STATE); 
         
+        // Swizzel, if needed, and set the input array
+        int xgpu_status;
         if( _is_dp4a ) {
-            xgpuSwizzleInputOnDevice(&_context, _swizzel, (ComplexInput *) in->data);
+            xgpu_status = xgpuSwizzleInputOnDevice(&_context, _swizzel, (ComplexInput *) in->data);
+            BF_ASSERT_EXCEPTION(xgpu_status == XGPU_OK, BF_STATUS_INTERNAL_ERROR);
             _context.array_h = _swizzel;
         } else {
             _context.array_h = (ComplexInput *) in->data;
         }
-        xgpuSetHostInputBuffer(&_context);
-        _context.matrix_h = (Complex *) out->data;
-        xgpuSetHostOutputBuffer(&_context);
+        xgpu_status = xgpuSetHostInputBuffer(&_context);
+        BF_ASSERT_EXCEPTION(xgpu_status == XGPU_OK, BF_STATUS_INTERNAL_ERROR);
         
-        int xgpu_status;
-        BFstatus status;
+        // Set the output matrix
+        _context.matrix_h = (Complex *) out->data;
+        xgpu_status = xgpuSetHostOutputBuffer(&_context);
+        BF_ASSERT_EXCEPTION(xgpu_status == XGPU_OK, BF_STATUS_INTERNAL_ERROR);
+        
+        // Correlate
         xgpu_status = xgpuCudaXengineOnDevice(&_context,
                                               dump ? SYNCOP_DUMP : SYNCOP_SYNC_COMPUTE);
-        status = bf_status_from_xgpu(xgpu_status);
-        if( status == BF_STATUS_SUCCESS && dump ) {
-            xgpuReorderMatrixOnDevice(&_context, (Complex *) out->data);
-            xgpu_status = xgpuClearDeviceIntegrationBuffer(&_context);
-            status = bf_status_from_xgpu(xgpu_status);
+        BF_ASSERT_EXCEPTION(xgpu_status == XGPU_OK, BF_STATUS_INTERNAL_ERROR);
+        
+        // Dump, if requested
+        if( dump ) {
+            xgpu_status = xgpuReorderMatrixOnDevice(&_context, (Complex *) out->data);
+            BF_ASSERT_EXCEPTION(xgpu_status == XGPU_OK, BF_STATUS_INTERNAL_ERROR);
+            
+            this->reset_state();
         }
-        return status;
     }
 };
 
@@ -195,15 +212,14 @@ BFstatus BXgpuInit(bxgpu plan,
                    int   ntime,
                    int   nchan,
                    int   nstand,
-                   int   npol,
-                   int   dev) {
+                   int   npol) {
     BF_ASSERT(plan, BF_STATUS_INVALID_HANDLE);
-    return plan->init(ntime, nchan, nstand, npol, dev);
+    BF_TRY_RETURN(plan->init(ntime, nchan, nstand, npol));
 }
 
 BFstatus BXgpuResetState(bxgpu plan) {
     BF_ASSERT(plan, BF_STATUS_INVALID_POINTER);
-    return plan->reset_state();
+    BF_TRY_RETURN(plan->reset_state());
 }
 
 BFstatus BXgpuExecute(bxgpu          plan,
@@ -230,7 +246,7 @@ BFstatus BXgpuExecute(bxgpu          plan,
     BF_ASSERT(space_accessible_from(out->space, BF_SPACE_CUDA),
               BF_STATUS_UNSUPPORTED_SPACE);
     
-    return plan->exec(in, out, dump);
+    BF_TRY_RETURN(plan->exec(in, out, dump));
 }
 
 BFstatus BXgpuDestroy(bxgpu plan) {
